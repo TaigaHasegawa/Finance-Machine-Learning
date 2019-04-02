@@ -1,0 +1,209 @@
+---
+title: "STAT430_HW3"
+author: "Taiga Hasegawa(taigah2)"
+date: "2019/2/19"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##Question1 
+```{r}
+weights_fracDiff=function(d,nWei,tau){
+  weights=rep(NA,nWei)
+  weights[1]=1
+  for(i in 2:nWei){
+    weight=-weights[i-1]*(d-(i-1)+1)/(i-1)
+    if(length(tau)!=0){
+      if(abs(weight)>tau){weights[i]=weight}
+      else{break} 
+    }else{
+      weights[i]=weight
+    }
+  }
+  return(weights)
+}
+fracDiff=function(x,d=0.3,nWei=40,tau=NULL){
+    weig=weights_fracDiff(d=d,nWei=nWei,tau=tau)
+    nWei=length(weig)
+    nx=length(x)
+    rst=rep(NA,nx)
+    rst[nWei:nx]=sapply(nWei:nx,function(i){sum(weig*x[i:(i-nWei+1)])})
+    return(rst)
+}
+```
+
+```{r}
+dat <- read.csv("unit_bar_XBTUSD_all.csv", header = T)
+dat$V <- as.numeric(dat$V)
+dat$C <- as.numeric(dat$C)
+trainDat <- dat[1:floor(nrow(dat)/3*2),]
+testDat <- dat[(floor(nrow(dat)/3*2)+1):nrow(dat),]
+```
+
+```{r}
+C_fracD <- fracDiff(x=dat$C,d=0.5,tau=0.001)
+idx=!is.na(C_fracD)
+cor(dat$C[idx],C_fracD[idx])
+```
+```{r}
+cor(c(0,diff(dat$C))[idx],dat$C[idx])
+```
+The correlation coefficients for the closed prices of the derived series and the original series were biger than the one for the first order difference of the closed prices and the original series because the d was defined so that memory was preserved.  
+
+
+##Question2 
+```{r warning=FALSE}
+library(lubridate)
+library(CADFtest)
+library(tseries)
+library(fUnitRoots)
+library(strucchange)
+```
+
+```{r warning=FALSE}
+for (i in seq(0.5,0.8,0.1)){
+  C_fracD=fracDiff(x=trainDat$C,d=i,tau=0.0001)
+  C_fracD=C_fracD[!is.na(C_fracD)]
+  print("-------------------------")
+  print(i)
+  print("-------------------------")
+  print(tseries::adf.test(C_fracD))
+  print(CADFtest::CADFtest(C_fracD, type="trend", max.lag.y=5))
+  print(summary(urca::ur.df(C_fracD, type="trend", lags=5)))
+  print(tseries::pp.test(C_fracD))
+  print(tseries::kpss.test(C_fracD, null="Trend"))
+  print("-------------------------")
+}
+```
+When d=0.8, fractionally differentiated closed price passed all the unit root tests and the stationarity test.
+I also checked whether d=0.79 passed those tests.
+
+```{r warning=FALSE}
+C_fracD=fracDiff(x=trainDat$C,d=0.79,tau=0.0001)
+C_fracD=C_fracD[!is.na(C_fracD)]
+tseries::adf.test(C_fracD)
+tseries::kpss.test(C_fracD, null="Trend")
+```
+In this case, it didn't pass the KPSS test. Therfore, d=0.8 is the appropriate value.
+
+Next we are talking about fractionally differentiated volumes.
+
+```{r warning=FALSE}
+for (i in seq(0.5,0.8,0.1)){
+  V_fracD=fracDiff(x=trainDat$V,d=i,tau=0.0001)
+  V_fracD=V_fracD[!is.na(V_fracD)]
+  print("-------------------------")
+  print(i)
+  print("-------------------------")
+  print(tseries::adf.test(V_fracD))
+  print(CADFtest::CADFtest(V_fracD, type="trend", max.lag.y=5))
+  print(summary(urca::ur.df(V_fracD, type="trend", lags=5)))
+  print(tseries::pp.test(V_fracD))
+  print(tseries::kpss.test(V_fracD, null="Trend"))
+  print("-------------------------")
+}
+```
+In this case, it barely didn't pass the KPSS test while it passed unit root tests. Then I tried d=0.81.
+
+```{r warning=FALSE}
+V_fracD=fracDiff(x=trainDat$V,d=0.81,tau=0.0001)
+V_fracD=V_fracD[!is.na(V_fracD)]
+tseries::adf.test(V_fracD)
+CADFtest::CADFtest(V_fracD, type="trend", max.lag.y=5)
+summary(urca::ur.df(V_fracD, type="trend", lags=5))
+tseries::pp.test(V_fracD)
+tseries::kpss.test(V_fracD, null="Trend")
+```
+Finaly, it passed the stationarity test and d=0.81 is the appropriate value for fractionally differentiated volume.
+
+##Question3
+```{r}
+C_fracD=fracDiff(x=dat$C,d=0.8,tau=0.0001)
+V_fracD=fracDiff(x=dat$V,d=0.81,tau=0.0001)
+```
+
+```{r warning=FALSE}
+library(devtools)
+devtools::install_github("larryleihua/fmlr")
+#CUSUM filter on the raw closed prices series
+i_CUSUM <- fmlr::istar_CUSUM(dat$C, h=200)
+n_Event <- length(i_CUSUM)
+#triple barrier labeling method on the raw closed prices series
+events <- data.frame(t0=i_CUSUM+1,t1 = i_CUSUM+200,trgt = rep(0.07, n_Event),side=rep(1,n_Event))
+ptSl <- c(1,1)
+out0 <- fmlr::label_meta(dat$C, events, ptSl, ex_vert = F)
+table(out0$label)
+plot(out0$ret)
+```
+
+##Question4 
+```{r}
+#predictors
+x <- dat$C
+v <- dat$V
+x_frac <- C_fracD
+v_frac <- V_fracD 
+
+fMat0 <- t(sapply(1:nrow(out0),
+                function(i){
+                      i_range <- out0$t0Fea[i]:out0$t1Fea[i]
+                      winTmp <- x[i_range]
+                      winTmp_frac=x_frac[i_range]
+                      C <- tail(winTmp,1)
+                      V <- sum(v[i_range])
+                      C_frac=tail(winTmp_frac,1)
+                      V_frac=sum(v_frac[i_range])
+                      return(c(C,V,C_frac,V_frac))
+                    }))
+
+#change into dataframe
+fMat0 <- data.frame(fMat0)
+allset=cbind(fMat0,as.factor(out0$label))
+names(allset) <- c("C", "V" ,"C_frac", "V_frac", "Y")
+
+#Split the data into train and test data
+i_CUSUM_train <- i_CUSUM[i_CUSUM <= nrow(trainDat)]
+trainSet <- allset[1:length(i_CUSUM_train),]
+testSet <- allset[(length(i_CUSUM_train)+1):nrow(allset),]
+
+```
+
+
+```{r}
+library(randomForest)
+library(ROCR)
+library(adabag)
+library(xgboost)
+library(rpart)
+```
+
+```{r}
+#bagged classification trees when h=200 and trgt=0.07
+set.seed(1)
+bag <- randomForest(Y ~ C + V + C_frac + V_frac, data = trainSet, mtry = 4, importance = TRUE, ntrees = 500, na.action = na.exclude )
+
+#Predection and confusion table
+prob_test <- predict(bag, newdata=testSet, type="prob")
+table(testSet$Y, prob_test[,2] >= 0.5)
+```
+There are more than 10 labels of 1 for the features bars obtained from the test set. 
+
+```{r}
+#AUC for the test set 
+pred <- prediction(ifelse(prob_test[,2]>=0.5, 1, 0), testSet$Y)
+auc <- performance(pred, measure = "auc")@y.values[[1]]
+auc
+```
+AUC for the test set predicted by the bagged trees was `r auc` and this achieved the goal. 
+
+```{r}
+acc_perf <- performance(pred, measure = "acc")
+acc_vec <- acc_perf@y.values[[1]]
+acc <- acc_vec[max(which(acc_perf@x.values[[1]] >= 0.5))]
+fmlr::acc_lucky(train_class = table(trainSet$Y),test_class = table(testSet$Y), my_acc = acc) 
+```
+
+It turned out that candidate model with the tuned parameters could overperform various guesses. 
