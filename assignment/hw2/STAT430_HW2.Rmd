@@ -1,0 +1,231 @@
+---
+title: "TaigaHasegawaHW2"
+author: "Taiga Hasegawa(taigah2)"
+date: "2019/2/2"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##1
+```{r}
+#read the file
+es_trades=read.csv("ES_Trades.csv")
+```
+
+```{r}
+#where the symbol is ESU13
+esu13=es_trades[es_trades$Symbol=="ESU13",]
+```
+
+```{r}
+#show the first 6 rows
+head(esu13)
+```
+```{r}
+#define dollar bars
+dollar_bars <- function(dat, nvol)
+{
+  n=cumsum(esu13$Unfiltered.Price)
+  winIdx <- as.factor(floor(n/nvol))
+  H <- aggregate(dat$Unfiltered.Price, by = list(winIdx), max)$x
+  L <- aggregate(dat$Unfiltered.Price, by = list(winIdx), min)$x
+  O <- aggregate(dat$Unfiltered.Price, by = list(winIdx), function(x){x[1]})$x
+  C <- aggregate(dat$Unfiltered.Price, by = list(winIdx), function(x){x[length(x)]})$x
+  list(H=H,L=L,O=O,C=C)  
+}
+```
+
+```{r}
+#implementing the dollar bar
+dollar_bar=dollar_bars(esu13,1000000)
+length(dollar_bar$H)
+```
+When the threhold is 1,000,000, we have 5572 dollar bars. 
+
+##2
+```{r}
+#difine cusum filter
+istar_CUSUM <- function(yvec, h)
+{
+  S_pos <- S_neg <- 0
+  istar <- NULL
+  yminusEy <- diff(yvec)
+  n <- length(yminusEy)
+  for(i in 1:n)
+  {
+    S_pos <- max(0, S_pos + yminusEy[i])
+    S_neg <- min(0, S_neg + yminusEy[i])
+    if(max(S_pos, -S_neg) >= h) # note that Snippet 2.4 in AFML does not follow the definition of S_t
+    {
+      istar <- c(istar, i)
+      S_pos <- S_neg <- 0
+    }
+  }
+  return(istar)
+}
+```
+
+```{r}
+i_CUSUM <- istar_CUSUM(dollar_bar$C, h=3)
+```
+
+```{r}
+i_CUSUM
+```
+When h is 3, we have 155 feature bars and it is reasonable.
+
+##3
+```{r}
+#define the triple barrier method
+#return the dataframe
+label_meta=function(x,events,ptSl){
+  t0 <- events$t0
+  t1 <- events$t1
+  trgt <- events$trgt
+  side <- events$side
+  u <- ptSl[1]
+  l <- ptSl[2]
+  rstlist=data.frame()
+  for (i in 1:dim(events)[1]){
+    i_trgt=trgt[i]
+    i_x=x[t0[i]:t1[i]]
+    i_side=side[i]
+    if(i_side==0){
+      up <- i_trgt*u
+      lo <- i_trgt*l
+      isup <- (i_x/i_x[1]-1) >= up
+      islo <- -(i_x/i_x[1]-1) >= lo
+      T_up <- ifelse(sum(isup)>0, min(which(isup)), Inf)
+      T_lo <- ifelse(sum(islo)>0, min(which(islo)), Inf)
+      ret <- i_x[min(T_up, T_lo, length(i_x))] / i_x[1] - 1
+      rst <- c(T_up, T_lo, length(i_x), ret)
+    }else if(i_side==1){
+      up <- i_trgt*u
+      isup <- (i_x/i_x[1]-1) >= up
+      T_up <- ifelse(sum(isup)>0, min(which(isup)), Inf)
+      T_lo <- Inf
+      ret <- i_x[min(T_up, T_lo, length(i_x))] / i_x[1] - 1
+      rst <- c(T_up, T_lo, length(i_x), ret)
+    }else{
+      lo <- i_trgt*l
+      islo <- -(i_x/i_x[1]-1) >= lo
+      T_up <- Inf
+      T_lo <- ifelse(sum(islo)>0, min(which(islo)), Inf)
+      ret <- i_x[min(T_up, T_lo, length(i_x))] / i_x[1] - 1
+      rst <- c(T_up, T_lo, length(i_x), ret)
+    }
+    rstlist=rbind(rstlist,rst)
+  }
+  colnames(rstlist)=c("T_up","T_lo","length","ret")
+  return(rstlist)
+}
+```
+
+```{r}
+#where ptSl=[1,1] and t1=70
+n_event=length(i_CUSUM)
+events <- data.frame(t0=i_CUSUM+1, t1 = i_CUSUM+70, trgt = rep(0.002, n_event), side=rep(0,n_event))
+x=dollar_bar$C
+ptSl=c(1,1)
+triplebarrier=label_meta(x,events,ptSl)
+triplebarrier
+```
+
+##4
+```{r}
+#where ptSl=[1,0] and t1=100
+events <- data.frame(t0=i_CUSUM+1, t1 = i_CUSUM+100, trgt = rep(0.002, n_event), side=rep(1,n_event))
+ptSl=c(1,0)
+label=label_meta(x,events,ptSl)
+```
+
+```{r}
+#plot the rst and threshold
+plot(1:dim(label)[1],label$ret)
+abline(h=events$trgt[1])
+abline(h=-events$trgt[1])
+```
+
+
+```{r}
+#calculatet the features from feature bars
+iTmp <- c(0, i_CUSUM)
+fMat0 <- t(sapply(1:(length(i_CUSUM)),
+                  function(i){
+                      winTmp <- x[(iTmp[i]+1):(iTmp[i+1])]
+                      C <- winTmp[length(winTmp)]
+                      SD <- sd(winTmp)
+                      return(c(C,SD))
+                    }
+  ))
+```
+
+```{r}
+#change into the dataframe 
+fMat0 <- data.frame(fMat0)
+names(fMat0) <- c("Close", "SD")
+X_train=fMat0
+```
+
+```{r}
+#labeling 
+Y_train <- rep(0, n_event)
+Y_train[label$ret>=events$trgt*ptSl[1]] <- 1
+```
+
+```{r}
+#linear regression 
+fit1 <- glm(Y_train ~ X_train$Close + X_train$SD, family = "binomial")
+summary(fit1)
+```
+I used the close price and standard deviation as predictors. The result showed that close price and intercept is significant with p value less than 5%. 
+
+Next I used only close price as predictors.
+
+```{r}
+fit2 <- glm(Y_train ~  X_train$Close , family = "binomial")
+summary(fit2)
+```
+Close price and intercept was still significant. 
+
+I predicted the outcome, using close price as predictors and made the confusion matrix. 
+```{r}
+pred <- predict(fit2, type="response")
+#confusion matrix
+table(Y_train, pred > 0.5)
+```
+I couldn't categorize well when the true label is 1. 
+
+ROC shows that the closer the ROC curve is to upper left corner, the higher the overall accuracy of the test is. 
+The below ROC was almost straight line and it was difficult to tell which point was the highest accuracy but 0.7 true positive rate and 0.5 false positive seemed to be good. 
+```{r}
+library(ROCR)
+ROC <- prediction(pred, Y_train)
+ROC_perf <- performance(ROC, 'tpr','fpr')
+plot(ROC_perf, main = "ROC curve")
+```
+The higher the AUC value is, the more accurate the model is. In this case, the AUC is 0.6073504. 
+```{r}
+AUC <- performance(ROC, "auc")
+AUC@y.values[[1]]
+```
+
+The below F1 score plot showed F1 score at every cutoff point . 
+```{r}
+F1 <- performance(ROC, 'f')
+plot(F1@y.values[[1]][-1]~F1@x.values[[1]][-1], xlab="Cutoff", ylab="F1 score")
+```
+
+```{r}
+optCut <- F1@x.values[[1]][-1][which.max(F1@y.values[[1]][-1])]
+```
+When the cutoff point was 0.2980931, the f1 score was the highest. 
+At this cutoff point, the confusion matrix was like below. we could classify the label 1 very well.
+
+```{r}
+table(Y_train, pred >= optCut)
+```
+
